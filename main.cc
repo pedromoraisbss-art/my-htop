@@ -1,107 +1,145 @@
-#include <cassert>
+#include <algorithm>
+#include <cctype>
+#include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <ncurses_dll.h>
-#include <string>
+#include <iostream>
 #include <ncurses.h>
+#include <string>
+#include <vector>
 
-//#include <ncurses_dll.h>
-#define PATH_ "/proc/"
-#define BARRER '-'
+namespace fs = std::filesystem;
 
-#ifdef NCURSES_ENABLE_STDBOOL_H
-    #else
-        static_assert("ncurses.h/ncurses.dll dont defined on system");
-#endif
+static constexpr const char* PATH_ = "/proc/";
+static constexpr int REFRESH_MS = 500;
 
-int gen = 0;
+struct ProcInfo {
+    std::string pid;
+    std::string name;
+    std::string state;
+    std::string vmsize;
+};
 
-
-std::string check_process(){
-    while(1){
-        std::string conv_gen_to_string = std::to_string(gen);
-        gen++;
-        if(gen >= 1000000){
-            gen = 0;
-        }
-        
-        std::ifstream read_path(PATH_ + conv_gen_to_string + "/status");
-        if(!read_path.is_open()){
-            
-        }
-        std::string name; std::string id; std::string balance_eq; std::string vmsize;
-        int line_1 = 0;
-        int line_2 = 0;
-        int line_3 = 0;
-        
-        std::string capture_return;
-        while(std::getline(read_path, name)){
-            std::string block;
-            while(read_path >> block){
-                if(block == "(running)"/* or block == "(sleeping)"*/){        
-                    while(std::getline(read_path, balance_eq)){
-                        line_1++;
-                        if(line_1 == 1) break;
-                    }    
-                    while(std::getline(read_path, id)){
-                        line_2++;
-                        if(line_2 == 3) break;
-                    }
-                    while(std::getline(read_path, vmsize)){
-                        line_3++;
-                        if(line_3 ==13) break;
-                    }
-                    capture_return = (" * " + id + " | " + name + " | " + block + " | " + vmsize);
-                    return capture_return;
-                }
-            }
-        }  
-    } 
+static bool is_pid_dir(const std::string& name) {
+    return !name.empty() &&
+           std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isdigit(c); });
 }
 
-int main(){        
-    std::filesystem::path directory_check = PATH_;
-    if(!std::filesystem::exists(directory_check)){
-        assert(std::filesystem::exists(PATH_) && "DONT FOUND THIS PATH");
-    }else{
-        for(const auto &print_files : std::filesystem::directory_iterator(PATH_)){
-            /*OPTIONAL PRINT ALL FILES*/
+static std::string extract_value(const std::string& line) {
+    auto pos = line.find(':');
+    if (pos == std::string::npos) return "";
+    std::string value = line.substr(pos + 1);
+    auto start = value.find_first_not_of(" \t");
+    auto end = value.find_last_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    return value.substr(start, end - start + 1);
+}
+
+static bool read_status(const std::string& pid, ProcInfo& out) {
+    std::ifstream status_file(std::string(PATH_) + pid + "/status");
+    if (!status_file.is_open()) return false;
+
+    std::string line;
+    bool found_name = false, found_state = false, found_vmsize = false;
+
+    while (std::getline(status_file, line)) {
+        if (line.rfind("Name:", 0) == 0) {
+            out.name = extract_value(line);
+            found_name = true;
+        } else if (line.rfind("State:", 0) == 0) {
+            out.state = extract_value(line);
+            found_state = true;
+        } else if (line.rfind("VmSize:", 0) == 0) {
+            out.vmsize = extract_value(line);
+            found_vmsize = true;
+            break;
         }
     }
+
+    out.pid = pid;
+    if (!found_vmsize) out.vmsize = "N/A";
+    return found_name && found_state;
+}
+
+extern "C" void handle_signal(int) {
+    endwin();
+    std::exit(0);
+}
+
+static std::vector<ProcInfo> collect_processes() {
+    std::vector<ProcInfo> processes;
+
+    if (!fs::exists(PATH_)) {
+        std::cerr << "Erro fatal: " << PATH_ << " nao encontrado neste sistema.\n";
+        std::exit(1);
+    }
+
+    for (const auto& entry : fs::directory_iterator(PATH_)) {
+        if (!entry.is_directory()) continue;
+        std::string name = entry.path().filename().string();
+        if (!is_pid_dir(name)) continue;
+
+        ProcInfo info;
+        if (read_status(name, info)) {
+            processes.push_back(std::move(info));
+        }
+    }
+
+    return processes;
+}
+
+int main() {
     initscr();
+    std::signal(SIGINT, handle_signal);
+    std::signal(SIGTERM, handle_signal);
+
     cbreak();
     noecho();
-    //contin
-    /* WINDOW PROCESS */
-    
-    int x, y;
-    getmaxyx(stdscr, y, x);
-    WINDOW * win = newwin(3, x-60, y-60, 30);
-    WINDOW *box_info = newwin(50, x-60, y-55, 30);
-    refresh();
+    curs_set(0);
+    keypad(stdscr, TRUE);
+    timeout(REFRESH_MS);
 
-    box(win, static_cast<int>(BARRER), static_cast<int>(BARRER));
-    mvwprintw(win, 1, 1, "| (PID)|");
-    mvwprintw(win, 1, 10, "(PROCESS NAME)|");
-    mvwprintw(win, 1, 30, "(STATUS)|");
-    mvwprintw(win, 1, 45, "(VmSize or Virtual memory usage) |");
-    wrefresh(win);
+    int max_y, max_x;
+    getmaxyx(stdscr, max_y, max_x);
 
-    box(box_info, static_cast<int>(BARRER), static_cast<int>(BARRER));
-    int i = 0;
-    while(1){
-        i++;
-        //const char *ar = check_process().c_str();
-        mvwprintw(box_info, i+1, 1, "%s", check_process().c_str());
-        if(i == 47){
-            i = 0;
+    int win_height = 3;
+    int win_width = std::max(40, max_x - 4);
+    int list_height = std::max(5, max_y - win_height - 3);
+
+    WINDOW* win = newwin(win_height, win_width, 1, 2);
+    WINDOW* box_info = newwin(list_height, win_width, win_height + 1, 2);
+
+    bool running = true;
+    while (running) {
+        auto processes = collect_processes();
+
+        werase(win);
+        box(win, 0, 0);
+        mvwprintw(win, 1, 1, "| (PID)| (PROCESS NAME)       (STATUS)      (VmSize)   (q para sair)");
+        wrefresh(win);
+
+        werase(box_info);
+        box(box_info, 0, 0);
+        int row = 1;
+        int max_rows = list_height - 2;
+        for (const auto& p : processes) {
+            if (row > max_rows) break;
+            mvwprintw(box_info, row, 1, "%-8s %-20s %-12s %-12s",
+                       p.pid.c_str(), p.name.c_str(), p.state.c_str(), p.vmsize.c_str());
+            row++;
         }
         wrefresh(box_info);
-        napms(20);
-    }    
-    int c = getch();
-    
-    /*WINDOW END*/
+
+        int ch = getch();
+        if (ch == 'q' || ch == 'Q') {
+            running = false;
+        }
+    }
+
+    delwin(win);
+    delwin(box_info);
     endwin();
+
     return 0;
 }
